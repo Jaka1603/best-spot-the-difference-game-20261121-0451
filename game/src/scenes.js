@@ -1,9 +1,18 @@
-// DOUBLE LIGHT — the three pictures, painted fresh in code.
-// Each scene is one paint(ctx, active) function. The left panel is always
-// painted with an empty `active` set (the untouched picture); the right
-// panel is painted with the round's chosen difference ids switched on, so
-// every mutation is a small, visible change to the same base drawing.
-// Anchors live in the 560x560 picture space and are shared by both panels.
+// DOUBLE LIGHT — the three pictures, painted as rich illustrations.
+// Each scene is ONE base painting (under game/assets/), drawn into the
+// panel through a per-scene source rect that lines the painting's own
+// landmarks up with the shared difference anchors. The left panel always
+// shows the original state; the right panel switches the round's chosen
+// difference ids on. Differences are applied with region techniques over
+// the same base, so the two panels can never drift apart anywhere else:
+//   removal  — a clone-stamp patch sampled from nearby texture of the
+//              same painting, feathered at the edges, or an overlay
+//              element that is simply not drawn on the changed panel;
+//   addition — a sprite whose texture is cropped from the painting
+//              itself, pasted at the anchor with a soft shadow;
+//   recolour — a tint patch clipped to the object's own shape.
+// Anchors live in the 560x560 picture space and are shared by both
+// panels; click targets and found markers derive from them alone.
 
 function disc(ctx, x, y, r) {
   ctx.beginPath();
@@ -42,306 +51,411 @@ function strokeLine(ctx, x1, y1, x2, y2) {
   ctx.stroke();
 }
 
-// Point on a quadratic curve — used to hang bulbs and bunting on the
-// same sagging lines in both panels.
-function qbez(p0, p1, p2, t) {
-  const u = 1 - t;
-  return {
-    x: u * u * p0.x + 2 * u * t * p1.x + t * t * p2.x,
-    y: u * u * p0.y + 2 * u * t * p1.y + t * t * p2.y,
+// A soft round glow in a painterly colour, fading to nothing.
+function glow(ctx, x, y, r, inner) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, inner);
+  g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = g;
+  disc(ctx, x, y, r);
+}
+
+// A tint patch clipped to a shape the caller has just pathed: the
+// recolour technique. The caller builds the path, then calls this.
+function tintPath(ctx, color, alpha) {
+  ctx.save();
+  ctx.clip();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, 560, 560);
+  ctx.restore();
+}
+
+// ------------------------------------------------------------- the art
+// Per-scene framing: [sx, sy, sw, sh] of the 1600x1600 painting is
+// stretched over the 560x560 panel. The harbour crop was measured so
+// the painted lamp room lands exactly on anchor h1 and the painted
+// roof on h7; the other two scenes frame the whole painting.
+const ART_DEFS = [
+  { key: 'harbour', src: 'assets/scene-harbour.jpg', rect: [265, 102, 1280, 1440], back: '#2a1a44' },
+  { key: 'cove', src: 'assets/scene-cove.jpg', rect: [0, 0, 1600, 1600], back: '#0a1a33' },
+  { key: 'market', src: 'assets/scene-market.jpg', rect: [0, 0, 1600, 1600], back: '#241145' },
+];
+
+const baseCanvases = {};
+const sprites = {};
+
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  return c;
+}
+
+// Feathered clone-stamp: copy the base's own texture from (tx+ox,
+// ty+oy) over the rect (tx, ty, w, h), with the alpha feathered to zero
+// at all four edges so the patch melts into the painting.
+function stampPatch(base, tx, ty, w, h, ox, oy) {
+  const patch = makeCanvas(w, h);
+  const p = patch.getContext('2d');
+  p.drawImage(base, tx + ox, ty + oy, w, h, 0, 0, w, h);
+  const feather = (horizontal) => {
+    const g = horizontal
+      ? p.createLinearGradient(0, 0, w, 0)
+      : p.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    g.addColorStop(0.3, 'rgba(0, 0, 0, 1)');
+    g.addColorStop(0.7, 'rgba(0, 0, 0, 1)');
+    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    p.globalCompositeOperation = 'destination-in';
+    p.fillStyle = g;
+    p.fillRect(0, 0, w, h);
+    p.globalCompositeOperation = 'source-over';
   };
+  feather(true);
+  feather(false);
+  return patch;
 }
 
-function skyGradient(ctx, stops) {
-  const g = ctx.createLinearGradient(0, 0, 0, 340);
-  for (const [at, color] of stops) g.addColorStop(at, color);
+// A sprite whose texture is cropped from the scene's own base canvas,
+// masked to the shape the caller's path describes.
+function cropSprite(base, sx, sy, w, h, pathFn) {
+  const c = makeCanvas(w, h);
+  const x = c.getContext('2d');
+  x.drawImage(base, sx, sy, w, h, 0, 0, w, h);
+  x.globalCompositeOperation = 'destination-in';
+  x.beginPath();
+  pathFn(x, w, h);
+  x.fillStyle = '#000';
+  x.fill();
+  x.globalCompositeOperation = 'source-over';
+  return c;
+}
+
+// The cove's painted fence starts a little left of anchor c8. The base
+// bakes in a repair shared by both panels: the painted leftmost post is
+// stamped out with shore texture and the rails are drawn through, so
+// the overlay post at the anchor is the one post that can vanish.
+function repairCoveFence(x, base) {
+  const patch = stampPatch(base, 334, 362, 32, 52, -56, 2);
+  x.drawImage(patch, 334, 362);
+  x.strokeStyle = '#4a3220';
+  x.lineWidth = 4;
+  strokeLine(x, 336, 382, 404, 382);
+  strokeLine(x, 336, 396, 404, 396);
+}
+
+function buildBase(def, img) {
+  const c = makeCanvas(560, 560);
+  const x = c.getContext('2d');
+  x.fillStyle = def.back;
+  x.fillRect(0, 0, 560, 560);
+  const [sx, sy, sw, sh] = def.rect;
+  x.drawImage(img, sx, sy, sw, sh, 0, 0, 560, 560);
+  if (def.key === 'cove') repairCoveFence(x, c);
+  baseCanvases[def.key] = c;
+  if (def.key === 'harbour') {
+    // The crate sprite is textured with the pier's own sunlit planks.
+    sprites.harbourCrate = cropSprite(c, 352, 450, 26, 24, (p, w, h) => {
+      p.rect(0, 0, w, h);
+    });
+  }
+  if (def.key === 'market') {
+    // The market crate wears the deck's own boards, cut from a spot
+    // the stall glow warms.
+    sprites.marketCrate = cropSprite(c, 292, 442, 26, 24, (p, w, h) => {
+      p.rect(0, 0, w, h);
+    });
+  }
+  if (def.key === 'cove') {
+    // The loose rock is a chip of the cove's own cliff-base stone.
+    sprites.coveRock = cropSprite(c, 118, 392, 44, 18, (p, w, h) => {
+      p.ellipse(w / 2, h / 2, w / 2 - 1, h / 2 - 1, 0, 0, Math.PI * 2);
+    });
+  }
+}
+
+function loadOne(def) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      buildBase(def, img);
+      resolve();
+    };
+    img.onerror = () => resolve();
+    img.src = def.src;
+  });
+}
+
+// Resolves once every painting is in (or has failed, in which case the
+// scene falls back to its flat backdrop colour and the overlays).
+export const ART_READY = Promise.all(ART_DEFS.map(loadOne));
+
+function paintBase(ctx, key, back) {
+  const c = baseCanvases[key];
+  if (c) {
+    ctx.drawImage(c, 0, 0);
+  } else {
+    ctx.fillStyle = back;
+    ctx.fillRect(0, 0, 560, 560);
+  }
+}
+
+// The title screen's backdrop: scene one's painting, cover-fit across
+// the whole stage with its harbour band centred.
+export function paintTitleBackdrop(ctx) {
+  const c = baseCanvases.harbour;
+  ctx.fillStyle = '#141d31';
+  ctx.fillRect(0, 0, 1280, 720);
+  if (c) ctx.drawImage(c, 0, 84, 560, 315, 0, 0, 1280, 720);
+  const g = ctx.createLinearGradient(0, 0, 0, 720);
+  g.addColorStop(0, 'rgba(6, 10, 20, 0.18)');
+  g.addColorStop(1, 'rgba(6, 10, 20, 0.52)');
   ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 560, 340);
+  ctx.fillRect(0, 0, 1280, 720);
 }
 
-function seaGradient(ctx, top, bottom) {
-  const g = ctx.createLinearGradient(0, 335, 0, 560);
-  g.addColorStop(0, top);
-  g.addColorStop(1, bottom);
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 335, 560, 225);
-}
-
-// ---------------------------------------------------------------- scene 1
+// ------------------------------------------------------------- harbour
+// The painting carries the dusk sky, the sun, the sea, the lighthouse
+// tower, the cottages and the pier. Everything that can change is an
+// overlay at its anchor: the lamp's light, the flag, one cottage
+// window, the sailboat, the buoy, a gull, the smoke, a star, a cloud,
+// the pier lamp and a crate textured with the pier's own planks.
 function paintHarbour(ctx, A) {
-  skyGradient(ctx, [[0, '#241a4d'], [0.55, '#7a3a6e'], [0.85, '#e8734a'], [1, '#f9b264']]);
+  paintBase(ctx, 'harbour', '#2a1a44');
 
-  // Early stars.
-  ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  const stars = [[160, 40], [210, 90], [480, 50], [60, 110], [330, 45], [540, 110]];
-  for (const [x, y] of stars) disc(ctx, x, y, 2);
-  if (!A.has('h10')) disc(ctx, 90, 60, 2.5);
-
-  // Clouds drift across the dusk sky; one of them can vanish.
-  ctx.fillStyle = 'rgba(255, 214, 170, 0.55)';
-  blob(ctx, 200, 70, 46, 12);
-  blob(ctx, 330, 45, 34, 9);
+  // h12 — a soft cloud that can clear away (left panel only).
   if (!A.has('h12')) {
+    ctx.fillStyle = 'rgba(255, 214, 190, 0.5)';
     blob(ctx, 480, 80, 52, 13);
     blob(ctx, 505, 72, 28, 9);
+    blob(ctx, 452, 84, 26, 8);
   }
 
-  // Low sun with a soft halo, sinking into the sea.
-  ctx.fillStyle = 'rgba(255, 190, 90, 0.25)';
-  disc(ctx, 415, 255, 70);
-  ctx.fillStyle = '#ffd76a';
-  disc(ctx, 415, 255, 44);
-  ctx.fillStyle = '#fff3c4';
-  disc(ctx, 415, 255, 30);
-
-  seaGradient(ctx, '#1d4258', '#0b2233');
-  // Sun glitter on the water.
-  ctx.fillStyle = 'rgba(255, 200, 110, 0.5)';
-  for (const [x, w] of [[392, 46], [402, 26], [388, 58], [410, 18]]) {
-    ctx.fillRect(x, 345, w, 4);
-  }
-  ctx.fillRect(396, 380, 34, 3);
-  ctx.fillRect(400, 420, 26, 3);
-  ctx.fillRect(404, 465, 18, 3);
-  // Wave strokes.
-  ctx.strokeStyle = 'rgba(180, 220, 235, 0.35)';
-  ctx.lineWidth = 2;
-  for (const [x, y, len] of [[60, 380, 70], [180, 420, 90], [300, 500, 80], [470, 400, 60], [120, 500, 70]]) {
-    strokeLine(ctx, x, y, x + len, y);
+  // h10 — one bright star that can wink out (left panel only).
+  if (!A.has('h10')) {
+    glow(ctx, 90, 60, 9, 'rgba(255, 255, 255, 0.55)');
+    ctx.fillStyle = '#ffffff';
+    disc(ctx, 90, 60, 2.5);
   }
 
-  // Distant headland on the right.
-  ctx.fillStyle = '#3a2350';
-  poly(ctx, [[470, 335], [560, 298], [560, 335]]);
-
-  // Lighthouse on the left point.
-  ctx.fillStyle = '#f7efdd';
-  poly(ctx, [[82, 355], [124, 355], [120, 175], [86, 175]]);
-  ctx.fillStyle = '#d64545';
-  ctx.fillRect(84, 300, 38, 20);
-  ctx.fillRect(86, 232, 34, 20);
-  ctx.fillStyle = '#2a3550';
-  ctx.fillRect(74, 168, 58, 8);
-  ctx.fillStyle = '#22304a';
-  ctx.fillRect(92, 140, 22, 30);
-  // The lamp: warm and glowing, or cold and dark.
-  if (A.has('h1')) {
-    ctx.fillStyle = '#2b3242';
-    disc(ctx, 103, 155, 9);
-  } else {
-    ctx.fillStyle = 'rgba(255, 233, 163, 0.35)';
-    disc(ctx, 103, 155, 20);
-    ctx.fillStyle = '#ffe9a3';
-    disc(ctx, 103, 155, 9);
-  }
-  ctx.fillStyle = '#d64545';
-  poly(ctx, [[90, 140], [116, 140], [103, 126]]);
-  // Flag on top — it can flip to the other side.
-  ctx.strokeStyle = '#2a3550';
-  ctx.lineWidth = 2;
-  strokeLine(ctx, 103, 126, 103, 110);
-  ctx.fillStyle = '#ffd76a';
-  if (A.has('h7')) poly(ctx, [[103, 111], [79, 117], [103, 123]]);
-  else poly(ctx, [[103, 111], [127, 117], [103, 123]]);
-
-  // Three little houses along the shore.
-  const houses = [
-    { x: 300, y: 312, w: 70, h: 53 },
-    { x: 380, y: 300, w: 74, h: 65 },
-    { x: 460, y: 315, w: 70, h: 50 },
-  ];
-  for (const hs of houses) {
-    ctx.fillStyle = '#e8d9b0';
-    ctx.fillRect(hs.x, hs.y, hs.w, hs.h);
-    ctx.fillStyle = '#b4503c';
-    poly(ctx, [[hs.x - 6, hs.y], [hs.x + hs.w + 6, hs.y], [hs.x + hs.w / 2, hs.y - 26]]);
-    ctx.fillStyle = '#4a3220';
-    ctx.fillRect(hs.x + hs.w / 2 - 9, hs.y + hs.h - 28, 18, 28);
-  }
-  // Windows: two lit, one that can go dark.
-  ctx.fillStyle = '#ffd76a';
-  ctx.fillRect(318, 330, 16, 16);
-  ctx.fillRect(344, 330, 16, 16);
-  ctx.fillRect(428, 330, 16, 16);
-  ctx.fillRect(478, 332, 16, 16);
-  ctx.fillRect(504, 332, 16, 16);
-  if (A.has('h3')) {
-    ctx.fillStyle = '#2a2a3a';
-    ctx.fillRect(396, 330, 18, 18);
-  } else {
-    ctx.fillStyle = '#ffd76a';
-    ctx.fillRect(396, 330, 18, 18);
-  }
-  // Chimney smoke that can clear away.
-  ctx.fillStyle = '#7a6a58';
-  ctx.fillRect(443, 276, 12, 30);
-  if (!A.has('h8')) {
-    ctx.fillStyle = 'rgba(230, 225, 215, 0.7)';
-    disc(ctx, 449, 268, 8);
-    disc(ctx, 456, 254, 10);
-    disc(ctx, 449, 238, 9);
-  }
-
-  // Wooden pier reaching into the water.
-  ctx.fillStyle = '#6b4a2f';
-  ctx.fillRect(300, 430, 260, 40);
-  ctx.fillStyle = '#8a6742';
-  for (let x = 306; x < 560; x += 18) ctx.fillRect(x, 430, 3, 40);
-  ctx.fillStyle = '#54371f';
-  for (const x of [320, 400, 480, 540]) ctx.fillRect(x, 468, 10, 42);
-  // Pier lamp: green, or red when switched.
-  ctx.strokeStyle = '#2a3550';
-  ctx.lineWidth = 3;
-  strokeLine(ctx, 520, 432, 520, 404);
-  ctx.fillStyle = A.has('h6') ? '#ff5d5d' : '#7dff9a';
-  disc(ctx, 520, 410, 8);
-  if (!A.has('h6')) {
-    ctx.fillStyle = 'rgba(125, 255, 154, 0.25)';
-    disc(ctx, 520, 410, 16);
-  }
-  // A crate waiting on the pier.
-  if (!A.has('h11')) {
-    ctx.fillStyle = '#a97c46';
-    ctx.fillRect(465, 440, 26, 24);
-    ctx.strokeStyle = '#6b4a2f';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(465, 440, 26, 24);
-    strokeLine(ctx, 465, 440, 491, 464);
-  }
-
-  // Sailboat with a sail that can change colour.
-  ctx.fillStyle = '#5a3a22';
-  poly(ctx, [[215, 405], [290, 405], [278, 425], [228, 425]]);
-  ctx.fillStyle = A.has('h9') ? '#b03030' : '#ffd76a';
-  ctx.fillRect(228, 411, 50, 5);
-  ctx.strokeStyle = '#3a2a18';
-  ctx.lineWidth = 3;
-  strokeLine(ctx, 252, 405, 252, 338);
-  ctx.fillStyle = A.has('h2') ? '#2ec4b6' : '#fdf6e3';
-  poly(ctx, [[252, 344], [252, 396], [296, 396]]);
-
-  // Buoy bobbing in the water.
-  if (!A.has('h4')) {
-    ctx.fillStyle = '#e8734a';
-    disc(ctx, 330, 495, 12);
-    ctx.fillStyle = '#ffd76a';
-    disc(ctx, 330, 480, 4);
-    ctx.strokeStyle = '#e8734a';
-    ctx.lineWidth = 3;
-    strokeLine(ctx, 330, 484, 330, 472);
-  }
-
-  // Gulls over the bay; one can fly away.
+  // Gulls over the bay; h5 is the one that can fly away.
   ctx.strokeStyle = '#2a2438';
   ctx.lineWidth = 2;
-  const gulls = [[340, 70], [255, 120]];
-  for (const [x, y] of gulls) {
+  const gull = (x, y) => {
     ctx.beginPath();
     ctx.moveTo(x - 9, y);
     ctx.quadraticCurveTo(x - 3, y - 6, x, y);
     ctx.quadraticCurveTo(x + 3, y - 6, x + 9, y);
     ctx.stroke();
+  };
+  gull(340, 70);
+  gull(255, 120);
+  if (!A.has('h5')) gull(300, 90);
+
+  // h1 — the lighthouse lamp: lit on the left, dark glass on the right.
+  // The crop puts the painted lamp room exactly here, so the lit state
+  // is a glow and a bright core over the painting's own glass.
+  if (!A.has('h1')) {
+    glow(ctx, 103, 155, 30, 'rgba(255, 233, 163, 0.5)');
+    ctx.fillStyle = '#ffe9a3';
+    disc(ctx, 103, 155, 10);
+    ctx.fillStyle = '#fff7d6';
+    disc(ctx, 103, 155, 5);
   }
-  if (!A.has('h5')) {
+
+  // h7 — the flag on the lighthouse roof flips side.
+  ctx.strokeStyle = '#2a3550';
+  ctx.lineWidth = 2;
+  strokeLine(ctx, 102, 141, 102, 102);
+  ctx.fillStyle = '#ffd76a';
+  if (A.has('h7')) poly(ctx, [[102, 104], [78, 110], [102, 116]]);
+  else poly(ctx, [[102, 104], [126, 110], [102, 116]]);
+
+  // h3 — the first cottage's window: lit on the left, dark on the
+  // right. The frame is wide enough to cover the painted window, which
+  // the crop parks just left of the anchor.
+  rrPath(ctx, 366, 323, 44, 20, 2);
+  if (A.has('h3')) {
+    ctx.fillStyle = '#232838';
+    ctx.fill();
+  } else {
+    const wg = ctx.createLinearGradient(0, 323, 0, 343);
+    wg.addColorStop(0, '#ffe9a3');
+    wg.addColorStop(1, '#f0a832');
+    ctx.fillStyle = wg;
+    ctx.fill();
+    glow(ctx, 388, 333, 24, 'rgba(255, 200, 110, 0.35)');
+  }
+  rrPath(ctx, 366, 323, 44, 20, 2);
+  ctx.strokeStyle = 'rgba(40, 30, 18, 0.8)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // h8 — chimney smoke that can clear away (left panel only). The
+  // crop parks the middle cottage's chimney at (466, 293).
+  if (!A.has('h8')) {
+    ctx.fillStyle = 'rgba(232, 226, 216, 0.65)';
+    disc(ctx, 465, 285, 7);
+    disc(ctx, 460, 268, 9);
+    disc(ctx, 468, 252, 10);
+    disc(ctx, 460, 236, 8);
+  }
+
+  // The sailboat rides the glitter path in both panels. h2 tints its
+  // sail teal through a patch clipped to the sail's own shape; h9
+  // tints the hull stripe red the same way.
+  ctx.fillStyle = 'rgba(20, 40, 55, 0.35)';
+  blob(ctx, 254, 428, 42, 5);
+  const hullGrad = ctx.createLinearGradient(0, 405, 0, 425);
+  hullGrad.addColorStop(0, '#7a5230');
+  hullGrad.addColorStop(1, '#4a2e18');
+  ctx.fillStyle = hullGrad;
+  poly(ctx, [[215, 405], [290, 405], [278, 425], [228, 425]]);
+  ctx.beginPath();
+  ctx.rect(228, 411, 50, 5);
+  ctx.fillStyle = '#ffd76a';
+  ctx.fill();
+  if (A.has('h9')) tintPath(ctx, '#b03030', 0.85);
+  ctx.strokeStyle = '#3a2a18';
+  ctx.lineWidth = 3;
+  strokeLine(ctx, 252, 405, 252, 338);
+  const sailGrad = ctx.createLinearGradient(252, 344, 296, 396);
+  sailGrad.addColorStop(0, '#fffaf0');
+  sailGrad.addColorStop(1, '#e8dcc2');
+  ctx.beginPath();
+  ctx.moveTo(252, 344);
+  ctx.lineTo(252, 396);
+  ctx.lineTo(296, 396);
+  ctx.closePath();
+  ctx.fillStyle = sailGrad;
+  ctx.fill();
+  if (A.has('h2')) tintPath(ctx, '#2ec4b6', 0.8);
+
+  // h4 — a buoy bobbing in the water (left panel only).
+  if (!A.has('h4')) {
+    ctx.strokeStyle = 'rgba(200, 225, 240, 0.4)';
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(291, 90);
-    ctx.quadraticCurveTo(297, 84, 300, 90);
-    ctx.quadraticCurveTo(303, 84, 309, 90);
+    ctx.ellipse(330, 503, 18, 4, 0, 0, Math.PI * 2);
     ctx.stroke();
+    const bg = ctx.createLinearGradient(0, 484, 0, 506);
+    bg.addColorStop(0, '#f08a5c');
+    bg.addColorStop(1, '#c4502e');
+    ctx.fillStyle = bg;
+    disc(ctx, 330, 495, 12);
+    ctx.strokeStyle = '#e8734a';
+    ctx.lineWidth = 3;
+    strokeLine(ctx, 330, 484, 330, 472);
+    ctx.fillStyle = '#ffd76a';
+    disc(ctx, 330, 480, 4);
+  }
+
+  // h6 — the pier lamp: green on the left, red on the right, drawn as
+  // a green lamp with a red tint patch over its glass when switched;
+  // the halo follows the lamp's colour either way.
+  ctx.strokeStyle = '#2a3550';
+  ctx.lineWidth = 3;
+  strokeLine(ctx, 520, 470, 520, 404);
+  if (A.has('h6')) {
+    glow(ctx, 520, 410, 17, 'rgba(255, 93, 93, 0.35)');
+    ctx.fillStyle = '#7dff9a';
+    disc(ctx, 520, 410, 8);
+    ctx.beginPath();
+    ctx.arc(520, 410, 9, 0, Math.PI * 2);
+    tintPath(ctx, '#ff5d5d', 0.9);
+  } else {
+    glow(ctx, 520, 410, 17, 'rgba(125, 255, 154, 0.35)');
+    ctx.fillStyle = '#7dff9a';
+    disc(ctx, 520, 410, 8);
+  }
+
+  // h11 — a crate on the pier (left panel only): a sprite textured
+  // with the pier's own planks, pasted with a soft shadow and frame.
+  if (!A.has('h11')) {
+    ctx.fillStyle = 'rgba(10, 16, 24, 0.35)';
+    blob(ctx, 480, 468, 20, 4);
+    const spr = sprites.harbourCrate;
+    if (spr) ctx.drawImage(spr, 465, 440);
+    ctx.strokeStyle = '#6b4a2f';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(465, 440, 26, 24);
+    strokeLine(ctx, 465, 440, 491, 464);
+    strokeLine(ctx, 491, 440, 465, 464);
   }
 }
 
-// ---------------------------------------------------------------- scene 2
+// --------------------------------------------------------------- cove
+// The painting carries the moon, the cliff, the lighthouse, the
+// cottage and the fence (with its leftmost post already repaired away
+// in the base, so the overlay post at c8 is the one that can vanish).
+// The beam, the cottage window, the boat, the crab and the small shore
+// props are overlays at their anchors.
 function paintCove(ctx, A) {
-  skyGradient(ctx, [[0, '#050b20'], [0.6, '#0e2148'], [1, '#1a3a66']]);
+  paintBase(ctx, 'cove', '#0a1a33');
 
-  // Moon with a pale halo.
-  ctx.fillStyle = 'rgba(244, 234, 210, 0.18)';
-  disc(ctx, 450, 80, 46);
-  ctx.fillStyle = '#f4ead2';
-  disc(ctx, 450, 80, 32);
-  ctx.fillStyle = '#d9cba6';
-  disc(ctx, 440, 72, 6);
-  disc(ctx, 460, 90, 5);
-  disc(ctx, 452, 96, 3);
-
-  // Stars; one can wink out.
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
-  for (const [x, y] of [[60, 50], [140, 90], [330, 40], [520, 140], [200, 140], [90, 180], [300, 110], [520, 60]]) {
-    disc(ctx, x, y, 2);
-  }
-  if (!A.has('c4')) disc(ctx, 250, 50, 2.5);
-
-  seaGradient(ctx, '#0a1f3a', '#061224');
-  ctx.fillStyle = 'rgba(244, 234, 210, 0.35)';
-  for (const [y, w] of [[360, 40], [400, 30], [450, 22], [500, 14]]) {
-    ctx.fillRect(450 - w / 2, y, w, 3);
-  }
-  ctx.strokeStyle = 'rgba(150, 190, 230, 0.3)';
-  ctx.lineWidth = 2;
-  for (const [x, y, len] of [[40, 420, 80], [240, 470, 70], [420, 430, 60]]) {
-    strokeLine(ctx, x, y, x + len, y);
+  // c4 — one bright star that can wink out (left panel only).
+  if (!A.has('c4')) {
+    glow(ctx, 250, 50, 9, 'rgba(255, 255, 255, 0.55)');
+    ctx.fillStyle = '#ffffff';
+    disc(ctx, 250, 50, 2.5);
   }
 
-  // Rocky cliff on the left, holding the lighthouse.
-  ctx.fillStyle = '#0d1526';
-  poly(ctx, [[0, 560], [0, 320], [60, 280], [110, 250], [160, 290], [200, 330], [190, 560]]);
-  ctx.strokeStyle = '#22304a';
-  ctx.lineWidth = 2;
-  strokeLine(ctx, 0, 320, 60, 280);
-  strokeLine(ctx, 60, 280, 110, 250);
+  // c1 — the beam sweeps right, or, when switched, left. It leaves
+  // from the painted lamp room, which the framing parks at (131, 66),
+  // and the right sweep's cone widens enough to pass through the
+  // shared anchor at (260, 175).
+  ctx.fillStyle = 'rgba(255, 233, 163, 0.16)';
+  if (A.has('c1')) poly(ctx, [[128, 52], [0, 80], [0, 345]]);
+  else poly(ctx, [[132, 52], [430, 80], [430, 345]]);
+  ctx.fillStyle = 'rgba(255, 233, 163, 0.10)';
+  if (A.has('c1')) poly(ctx, [[128, 56], [0, 130], [0, 270]]);
+  else poly(ctx, [[132, 56], [430, 130], [430, 270]]);
 
-  // Lighthouse tower and lamp.
-  ctx.fillStyle = '#e8e2d2';
-  poly(ctx, [[92, 255], [138, 255], [132, 152], [98, 152]]);
-  ctx.fillStyle = '#3a4a6b';
-  ctx.fillRect(95, 210, 40, 14);
-  ctx.fillStyle = '#22304a';
-  ctx.fillRect(98, 128, 34, 26);
-  ctx.fillStyle = '#ffe9a3';
-  disc(ctx, 115, 141, 8);
-  // The beam sweeps right — or, when switched, left.
-  ctx.fillStyle = 'rgba(255, 233, 163, 0.20)';
-  if (A.has('c1')) poly(ctx, [[112, 141], [0, 152], [0, 250]]);
-  else poly(ctx, [[120, 141], [420, 152], [420, 250]]);
-
-  // Cottage with warm windows on the right.
-  ctx.fillStyle = '#6b4a2f';
-  ctx.fillRect(385, 315, 135, 85);
-  ctx.fillStyle = '#8a3a30';
-  poly(ctx, [[375, 315], [530, 315], [452, 272]]);
-  ctx.fillStyle = '#4a3220';
-  ctx.fillRect(440, 355, 26, 45);
-  ctx.fillStyle = '#ffd76a';
-  ctx.fillRect(480, 332, 26, 24);
+  // c2 — the cottage's left window: lit on the left, dark on the
+  // right, framed on the painted cottage's own left wall.
+  rrPath(ctx, 406, 335, 18, 18, 2);
   if (A.has('c2')) {
     ctx.fillStyle = '#22283a';
-    ctx.fillRect(398, 332, 26, 24);
+    ctx.fill();
   } else {
-    ctx.fillStyle = '#ffd76a';
-    ctx.fillRect(398, 332, 26, 24);
+    const wg = ctx.createLinearGradient(0, 335, 0, 353);
+    wg.addColorStop(0, '#ffe9a3');
+    wg.addColorStop(1, '#f0a832');
+    ctx.fillStyle = wg;
+    ctx.fill();
+    glow(ctx, 415, 344, 22, 'rgba(255, 200, 110, 0.32)');
   }
-  // Chimney and its smoke.
-  ctx.fillStyle = '#5a4030';
-  ctx.fillRect(498, 252, 12, 34);
+  rrPath(ctx, 406, 335, 18, 18, 2);
+  ctx.strokeStyle = 'rgba(30, 22, 14, 0.85)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // c7 — chimney smoke that can clear away (left panel only). The
+  // framing parks the cottage chimney at (509, 280).
   if (!A.has('c7')) {
-    ctx.fillStyle = 'rgba(220, 220, 225, 0.65)';
-    disc(ctx, 504, 242, 7);
-    disc(ctx, 511, 229, 9);
-    disc(ctx, 505, 216, 8);
+    ctx.fillStyle = 'rgba(220, 220, 225, 0.6)';
+    disc(ctx, 506, 258, 7);
+    disc(ctx, 513, 242, 9);
+    disc(ctx, 506, 226, 8);
   }
 
-  // Fence posts along the cottage garden; one can go missing.
-  ctx.fillStyle = '#4a3220';
-  ctx.fillRect(330, 392, 190, 5);
-  for (const x of [335, 360, 385, 410, 435, 460, 485, 510]) {
-    if (x === 360 && A.has('c8')) continue;
-    ctx.fillRect(x, 384, 7, 34);
+  // c8 — the fence post at the anchor (left panel only). The base
+  // already repaired the painted post away and drew the rails
+  // through, so the fence simply gains a gap here when switched.
+  if (!A.has('c8')) {
+    const pg = ctx.createLinearGradient(357, 0, 364, 0);
+    pg.addColorStop(0, '#5a4030');
+    pg.addColorStop(0.5, '#7a5a3a');
+    pg.addColorStop(1, '#4a3220');
+    ctx.fillStyle = pg;
+    ctx.fillRect(357, 371, 7, 47);
+    ctx.fillStyle = '#6b4a2f';
+    ctx.fillRect(356, 369, 9, 5);
   }
-  // (When c8 is switched on, the post at x 360 above is skipped: the
-  // gap in the fence is itself the difference, so nothing replaces it.)
 
-  // Lantern post near the fence.
+  // c10 — the lantern post at the shore: lit on the left, dark on
+  // the right.
   ctx.strokeStyle = '#2a3550';
   ctx.lineWidth = 3;
   strokeLine(ctx, 330, 400, 330, 344);
@@ -349,14 +463,24 @@ function paintCove(ctx, A) {
     ctx.fillStyle = '#2b3242';
     ctx.fillRect(322, 330, 16, 22);
   } else {
-    ctx.fillStyle = 'rgba(255, 200, 110, 0.3)';
-    disc(ctx, 330, 341, 18);
+    glow(ctx, 330, 341, 20, 'rgba(255, 200, 110, 0.4)');
     ctx.fillStyle = '#ffb347';
     ctx.fillRect(322, 330, 16, 22);
+    ctx.fillStyle = '#ffe9a3';
+    ctx.fillRect(326, 334, 8, 14);
   }
+  ctx.strokeStyle = 'rgba(16, 20, 30, 0.8)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(322, 330, 16, 22);
 
-  // Rowboat with an oar that can be lost.
-  ctx.fillStyle = '#7a4a26';
+  // The rowboat rides the shallows in both panels; c3 is its oar,
+  // which can be lost (left panel only).
+  ctx.fillStyle = 'rgba(12, 24, 40, 0.35)';
+  blob(ctx, 283, 465, 38, 4);
+  const boatGrad = ctx.createLinearGradient(0, 445, 0, 462);
+  boatGrad.addColorStop(0, '#8a5a30');
+  boatGrad.addColorStop(1, '#5a3418');
+  ctx.fillStyle = boatGrad;
   poly(ctx, [[250, 445], [315, 445], [305, 462], [260, 462]]);
   ctx.fillStyle = '#5a3418';
   ctx.fillRect(258, 449, 50, 4);
@@ -368,21 +492,41 @@ function paintCove(ctx, A) {
     blob(ctx, 324, 422, 7, 4);
   }
 
-  // Buoy light that can change colour.
-  ctx.fillStyle = '#c94f3d';
-  disc(ctx, 385, 488, 10);
-  ctx.fillStyle = A.has('c6') ? '#ff5d5d' : '#ffb347';
-  disc(ctx, 385, 474, 5);
-
-  // A lone rock in the water.
-  if (!A.has('c5')) {
-    ctx.fillStyle = '#16233c';
-    blob(ctx, 202, 505, 20, 8);
+  // c11 — a rope coil on a mooring post (coil on the left only).
+  ctx.fillStyle = '#3a2a18';
+  ctx.fillRect(251, 464, 8, 30);
+  ctx.fillStyle = '#54371f';
+  ctx.fillRect(250, 462, 10, 5);
+  if (!A.has('c11')) {
+    ctx.strokeStyle = '#c9a86a';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(255, 480, 11, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(255, 480, 6, 0, Math.PI * 2);
+    ctx.stroke();
   }
 
-  // Crab on the shore rock.
-  ctx.fillStyle = '#16233c';
-  blob(ctx, 152, 420, 26, 10);
+  // c5 — a loose rock in the shallows (left panel only): a sprite
+  // chipped from the painting's own cliff-base stone.
+  if (!A.has('c5')) {
+    ctx.fillStyle = 'rgba(10, 18, 30, 0.3)';
+    blob(ctx, 203, 512, 22, 4);
+    const rock = sprites.coveRock;
+    if (rock) ctx.drawImage(rock, 180, 496);
+    else {
+      ctx.fillStyle = '#16233c';
+      blob(ctx, 202, 505, 20, 8);
+    }
+  }
+
+  // c9 — a crab on its shore rock: the rock is dressing in both
+  // panels, the crab itself can vanish.
+  ctx.fillStyle = '#141f33';
+  blob(ctx, 152, 422, 26, 9);
+  ctx.fillStyle = 'rgba(190, 215, 240, 0.18)';
+  blob(ctx, 146, 418, 14, 4);
   if (!A.has('c9')) {
     ctx.fillStyle = '#d64545';
     disc(ctx, 152, 414, 6);
@@ -394,163 +538,173 @@ function paintCove(ctx, A) {
     strokeLine(ctx, 158, 412, 164, 406);
   }
 
-  // Rope coil on the sand.
-  if (!A.has('c11')) {
-    ctx.strokeStyle = '#c9a86a';
-    ctx.lineWidth = 3;
+  // c6 — the buoy: its light burns amber on the left, red on the
+  // right, a tint patch over the lamp's own disc; the halo follows.
+  ctx.fillStyle = 'rgba(160, 190, 225, 0.25)';
+  blob(ctx, 385, 494, 15, 3);
+  ctx.fillStyle = '#c94f3d';
+  disc(ctx, 385, 488, 10);
+  if (A.has('c6')) {
+    glow(ctx, 385, 474, 11, 'rgba(255, 93, 93, 0.5)');
+    ctx.fillStyle = '#ffb347';
+    disc(ctx, 385, 474, 5);
     ctx.beginPath();
-    ctx.arc(255, 482, 12, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(255, 482, 7, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.arc(385, 474, 6, 0, Math.PI * 2);
+    tintPath(ctx, '#ff5d5d', 0.9);
+  } else {
+    glow(ctx, 385, 474, 11, 'rgba(255, 179, 71, 0.5)');
+    ctx.fillStyle = '#ffb347';
+    disc(ctx, 385, 474, 5);
   }
 }
 
-// ---------------------------------------------------------------- scene 3
+// ------------------------------------------------------------- market
+// The painting carries the violet sky, the string lights, the three
+// tall stalls, the pier deck and the water. Every difference is an
+// overlay at its anchor: two of the painted bulbs, a garland under
+// the first stall's awning, a lantern in the second stall, a basket
+// on its counter, balloons, a pennant on the wire, a patch on the
+// third stall's awning, a crate, a star on a sign, the pier lamp and
+// a little boat.
 function paintMarket(ctx, A) {
-  skyGradient(ctx, [[0, '#160b2e'], [0.6, '#2c1650'], [1, '#4a2566']]);
+  paintBase(ctx, 'market', '#241145');
 
-  // String lights sagging across the top.
-  const s1a = { x: 0, y: 40 };
-  const s1b = { x: 280, y: 95 };
-  const s1c = { x: 560, y: 45 };
+  // m2 — a bulb on the top wire that can burn out. The framing parks
+  // a painted wire arc just above the anchor, so the overlay bulb
+  // hangs from it on a short cord: lit on the left, dark on the
+  // right.
   ctx.strokeStyle = '#0d0d18';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(s1a.x, s1a.y);
-  ctx.quadraticCurveTo(s1b.x, s1b.y, s1c.x, s1c.y);
-  ctx.stroke();
-  const bulbColors = ['#ffd76a', '#ff8fb0', '#7de3ff', '#b6ff9a', '#ffb347', '#c9a6ff'];
-  const bulbTs = [0.12, 0.28, 0.44, 0.6, 0.76, 0.9];
-  bulbTs.forEach((t, i) => {
-    if (t === 0.28 && A.has('m2')) return; // one bulb burnt out
-    const p = qbez(s1a, s1b, s1c, t);
-    ctx.fillStyle = bulbColors[i % bulbColors.length];
-    disc(ctx, p.x, p.y + 8, 5);
-  });
-
-  // Bunting flags on a second line.
-  const s2a = { x: 0, y: 105 };
-  const s2b = { x: 280, y: 140 };
-  const s2c = { x: 560, y: 105 };
-  ctx.beginPath();
-  ctx.moveTo(s2a.x, s2a.y);
-  ctx.quadraticCurveTo(s2b.x, s2b.y, s2c.x, s2c.y);
-  ctx.stroke();
-  const flagColors = ['#ff5d5d', '#ffd76a', '#37d67a', '#4da3ff', '#ff8fb0', '#b6ff9a'];
-  const flagTs = [0.15, 0.3, 0.45, 0.6, 0.75, 0.9];
-  flagTs.forEach((t, i) => {
-    if (t === 0.6 && A.has('m7')) return; // one flag torn away
-    const p = qbez(s2a, s2b, s2c, t);
-    ctx.fillStyle = flagColors[i % flagColors.length];
-    poly(ctx, [[p.x - 8, p.y + 2], [p.x + 8, p.y + 2], [p.x, p.y + 18]]);
-  });
-
-  // Ferris wheel, the market's centrepiece.
-  ctx.strokeStyle = '#c9ae72';
-  ctx.lineWidth = 6;
-  ctx.beginPath();
-  ctx.arc(430, 220, 105, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(430, 220, 80, 0, Math.PI * 2);
-  ctx.stroke();
-  for (let i = 0; i < 8; i += 1) {
-    const a = (i / 8) * Math.PI * 2;
-    strokeLine(ctx, 430, 220, 430 + Math.cos(a) * 105, 220 + Math.sin(a) * 105);
-  }
-  // Cabins around the rim; the top one can change colour.
-  const cabinColors = ['#ff5d5d', '#ffd76a', '#37d67a', '#4da3ff'];
-  for (let i = 0; i < 8; i += 1) {
-    const a = -Math.PI / 2 + (i / 8) * Math.PI * 2;
-    const cx = 430 + Math.cos(a) * 105;
-    const cy = 220 + Math.sin(a) * 105;
-    const isTop = i === 0;
-    ctx.fillStyle = isTop && A.has('m1') ? '#4da3ff' : cabinColors[i % cabinColors.length];
-    rrPath(ctx, cx - 11, cy - 9, 22, 18, 4);
-    ctx.fill();
-  }
-  // Hub light that can change colour.
-  ctx.fillStyle = A.has('m8') ? '#7de3ff' : '#ffd76a';
-  disc(ctx, 430, 220, 13);
-  ctx.fillStyle = '#8a6742';
-  poly(ctx, [[400, 330], [460, 330], [438, 232], [422, 232]]);
-
-  // Balloons tied near the wheel.
-  if (!A.has('m6')) {
-    ctx.strokeStyle = '#f7efdd';
-    ctx.lineWidth = 1;
-    strokeLine(ctx, 520, 122, 505, 88);
-    strokeLine(ctx, 520, 122, 520, 74);
-    strokeLine(ctx, 520, 122, 535, 90);
-    ctx.fillStyle = '#ff5d5d';
-    disc(ctx, 505, 84, 11);
+  ctx.lineWidth = 1.5;
+  strokeLine(ctx, 150, 47, 157, 58);
+  if (A.has('m2')) {
+    ctx.fillStyle = '#2b3242';
+    disc(ctx, 157, 66, 5);
+  } else {
+    glow(ctx, 157, 66, 13, 'rgba(255, 190, 90, 0.55)');
     ctx.fillStyle = '#ffd76a';
-    disc(ctx, 520, 68, 11);
-    ctx.fillStyle = '#4da3ff';
-    disc(ctx, 535, 86, 11);
+    disc(ctx, 157, 66, 5);
   }
 
-  // Stall A — striped awning, sign with a star.
-  ctx.fillStyle = '#7a5230';
-  ctx.fillRect(60, 380, 120, 40);
-  ctx.fillStyle = '#5a3a22';
-  ctx.fillRect(60, 380, 120, 6);
-  for (let i = 0; i < 6; i += 1) {
-    const stripe = i % 2 === 0
-      ? (A.has('m3') ? '#2ec4b6' : '#d64545')
-      : '#f7efdd';
-    ctx.fillStyle = stripe;
-    ctx.fillRect(55 + i * 22, 295, 22, 30);
+  // m1 — one of the painted string bulbs changes colour: warm amber
+  // on the left, cool cyan on the right, as glow and core laid over
+  // the painting's own bulb at (434, 104).
+  if (A.has('m1')) {
+    glow(ctx, 434, 104, 17, 'rgba(125, 227, 255, 0.55)');
+    ctx.fillStyle = '#aee9ff';
+    disc(ctx, 434, 104, 5);
+  } else {
+    glow(ctx, 434, 104, 17, 'rgba(255, 190, 90, 0.5)');
+    ctx.fillStyle = '#ffd76a';
+    disc(ctx, 434, 104, 5);
   }
+
+  // m7 — a pennant on the bulb wire that can be torn away (left
+  // panel only). The framing parks the wire itself at the anchor.
+  if (!A.has('m7')) {
+    ctx.fillStyle = '#37d67a';
+    poly(ctx, [[328, 117], [344, 117], [336, 136]]);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+    poly(ctx, [[336, 117], [344, 117], [336, 136]]);
+  }
+
+  // m6 — balloons tied to the top wire (left panel only).
+  if (!A.has('m6')) {
+    ctx.strokeStyle = 'rgba(247, 239, 221, 0.75)';
+    ctx.lineWidth = 1;
+    strokeLine(ctx, 520, 122, 505, 92);
+    strokeLine(ctx, 520, 122, 520, 78);
+    strokeLine(ctx, 520, 122, 535, 94);
+    const balloon = (x, y, color) => {
+      ctx.fillStyle = color;
+      disc(ctx, x, y, 11);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+      disc(ctx, x - 4, y - 4, 3.5);
+    };
+    balloon(505, 84, '#ff5d5d');
+    balloon(520, 68, '#ffd76a');
+    balloon(535, 86, '#4da3ff');
+  }
+
+  // m10 — the sign over the first stall: a plain board in both
+  // panels, its gold star can vanish.
   ctx.fillStyle = '#22304a';
   ctx.fillRect(95, 250, 50, 26);
+  ctx.strokeStyle = '#101828';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(95, 250, 50, 26);
   if (!A.has('m10')) {
     ctx.fillStyle = '#ffd76a';
     poly(ctx, [[120, 254], [122, 260], [129, 260], [124, 264], [126, 271], [120, 267], [114, 271], [116, 264], [111, 260], [118, 260]]);
   }
 
-  // Stall B — the fish counter.
-  ctx.fillStyle = '#3a5a3a';
-  ctx.fillRect(195, 380, 105, 40);
-  for (let i = 0; i < 5; i += 1) {
-    ctx.fillStyle = i % 2 === 0 ? '#2c6b4f' : '#f7efdd';
-    ctx.fillRect(192 + i * 22, 312, 22, 26);
-  }
-  ctx.fillStyle = '#9fc4d8';
-  blob(ctx, 222, 386, 12, 5);
-  blob(ctx, 272, 386, 12, 5);
-  if (!A.has('m5')) {
-    blob(ctx, 248, 388, 13, 5);
-    poly(ctx, [[260, 388], [268, 382], [268, 394]]);
+  // m3 — a garland swag under the first stall's awning (left panel
+  // only): a sagging cord and five little pennants.
+  if (!A.has('m3')) {
+    ctx.strokeStyle = '#0d0d18';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(62, 302);
+    ctx.quadraticCurveTo(120, 320, 178, 302);
+    ctx.stroke();
+    const swag = [[74, 307], [97, 312], [120, 314], [143, 312], [166, 307]];
+    const swagColors = ['#ff5d5d', '#ffd76a', '#37d67a', '#4da3ff', '#ff8fb0'];
+    swag.forEach(([x, y], i) => {
+      ctx.fillStyle = swagColors[i];
+      poly(ctx, [[x - 6, y], [x + 6, y], [x, y + 12]]);
+    });
   }
 
-  // Stall C — paper lantern hanging over the counter.
-  ctx.fillStyle = '#4a2a5a';
-  ctx.fillRect(310, 380, 100, 40);
-  for (let i = 0; i < 4; i += 1) {
-    ctx.fillStyle = i % 2 === 0 ? '#7a4a8a' : '#f7efdd';
-    ctx.fillRect(308 + i * 26, 308, 26, 26);
-  }
+  // m4 — a paper lantern glowing inside the second stall (left
+  // panel only), hanging from its awning's edge.
   if (!A.has('m4')) {
-    ctx.fillStyle = 'rgba(255, 93, 93, 0.3)';
-    disc(ctx, 350, 300, 22);
+    ctx.strokeStyle = '#0d0d18';
+    ctx.lineWidth = 1.5;
+    strokeLine(ctx, 350, 296, 350, 300);
+    glow(ctx, 350, 308, 22, 'rgba(255, 93, 93, 0.4)');
     ctx.fillStyle = '#ff5d5d';
-    disc(ctx, 350, 300, 14);
+    disc(ctx, 350, 308, 13);
+    ctx.fillStyle = '#ff8a7a';
+    disc(ctx, 350, 308, 9);
     ctx.fillStyle = '#ffd76a';
-    disc(ctx, 350, 300, 5);
+    disc(ctx, 350, 308, 4);
   }
 
-  // Pier deck and posts.
-  ctx.fillStyle = '#6b4a2f';
-  ctx.fillRect(0, 430, 560, 70);
-  ctx.fillStyle = '#8a6742';
-  for (let x = 8; x < 560; x += 20) ctx.fillRect(x, 430, 3, 70);
-  ctx.fillStyle = '#54371f';
-  for (const x of [60, 180, 300, 420]) ctx.fillRect(x, 498, 12, 30);
-  // Pier lamp that can go dark.
+  // m8 — a sewn patch on the third stall's awning (left panel
+  // only): cream cloth with a dashed stitch, turned a few degrees.
+  if (!A.has('m8')) {
+    ctx.save();
+    ctx.translate(430, 219);
+    ctx.rotate(-0.06);
+    ctx.fillStyle = 'rgba(243, 229, 195, 0.95)';
+    ctx.fillRect(-14, -13, 28, 26);
+    ctx.strokeStyle = '#b4503c';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(-11, -10, 22, 20);
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // m5 — a woven basket hanging on the second stall's counter
+  // front (left panel only).
+  if (!A.has('m5')) {
+    ctx.fillStyle = 'rgba(10, 8, 16, 0.3)';
+    blob(ctx, 250, 402, 20, 3);
+    const basketGrad = ctx.createLinearGradient(0, 374, 0, 400);
+    basketGrad.addColorStop(0, '#c9a86a');
+    basketGrad.addColorStop(1, '#8a6a3a');
+    ctx.fillStyle = basketGrad;
+    poly(ctx, [[232, 374], [268, 374], [262, 400], [238, 400]]);
+    ctx.strokeStyle = 'rgba(90, 64, 32, 0.7)';
+    ctx.lineWidth = 1.5;
+    strokeLine(ctx, 235, 383, 265, 383);
+    strokeLine(ctx, 237, 392, 263, 392);
+    ctx.fillStyle = '#a97c46';
+    ctx.fillRect(230, 371, 40, 6);
+  }
+
+  // m11 — the pier lamp in front of the third stall: lit on the
+  // left, dark on the right.
   ctx.strokeStyle = '#2a3550';
   ctx.lineWidth = 3;
   strokeLine(ctx, 500, 432, 500, 402);
@@ -558,28 +712,28 @@ function paintMarket(ctx, A) {
     ctx.fillStyle = '#2b3242';
     disc(ctx, 500, 398, 8);
   } else {
-    ctx.fillStyle = 'rgba(255, 200, 110, 0.3)';
-    disc(ctx, 500, 398, 16);
+    glow(ctx, 500, 398, 17, 'rgba(255, 200, 110, 0.45)');
     ctx.fillStyle = '#ffd76a';
     disc(ctx, 500, 398, 8);
   }
-  // Crate on the deck.
+
+  // m9 — a crate on the deck (left panel only): a sprite textured
+  // with the deck's own boards, pasted with a soft shadow.
   if (!A.has('m9')) {
-    ctx.fillStyle = '#a97c46';
-    ctx.fillRect(78, 440, 26, 24);
+    ctx.fillStyle = 'rgba(8, 8, 18, 0.35)';
+    blob(ctx, 92, 466, 19, 4);
+    const spr = sprites.marketCrate;
+    if (spr) ctx.drawImage(spr, 77, 439);
     ctx.strokeStyle = '#6b4a2f';
     ctx.lineWidth = 2;
     ctx.strokeRect(78, 440, 26, 24);
+    strokeLine(ctx, 78, 440, 104, 464);
   }
 
-  // Water under the pier and a little boat.
-  ctx.fillStyle = '#0d1f33';
-  ctx.fillRect(0, 500, 560, 60);
-  ctx.strokeStyle = 'rgba(150, 190, 230, 0.3)';
-  ctx.lineWidth = 2;
-  strokeLine(ctx, 40, 530, 120, 530);
-  strokeLine(ctx, 420, 545, 500, 545);
+  // m12 — a little boat on the water under the pier (left only).
   if (!A.has('m12')) {
+    ctx.fillStyle = 'rgba(16, 28, 48, 0.4)';
+    blob(ctx, 300, 540, 30, 3);
     ctx.fillStyle = '#5a3a22';
     poly(ctx, [[275, 522], [325, 522], [315, 536], [285, 536]]);
     ctx.strokeStyle = '#3a2a18';

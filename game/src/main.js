@@ -3,11 +3,14 @@
 // so the clock and the pulses behave the same on every machine.
 // URL parameters: ?seed=N picks the round deals; ?shot=title|play|play2|
 // clear poses a deterministic state for screenshots and sets
-// window.__shotReady once the stage has been painted twice.
+// window.__shotReady once the stage has been painted twice. The scene
+// paintings preload before the first frame, so no panel ever flashes
+// its flat fallback colour.
 import { Game } from './game.js';
 import { drawGame } from './render.js';
 import { attachInput } from './input.js';
 import { applyShot } from './shots.js';
+import { ART_READY } from './scenes.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -50,11 +53,15 @@ function frame(now) {
   draw();
   requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
 
-// Screenshot staging: paint the posed state twice, then signal readiness.
-if (shot) {
-  draw();
-  draw();
-  window.__shotReady = true;
-}
+ART_READY.then(() => {
+  requestAnimationFrame(frame);
+
+  // Screenshot staging: paint the posed state twice, then signal
+  // readiness — only now, with the paintings in, is the stage final.
+  if (shot) {
+    draw();
+    draw();
+    window.__shotReady = true;
+  }
+});

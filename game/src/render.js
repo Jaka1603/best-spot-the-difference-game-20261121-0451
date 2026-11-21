@@ -3,7 +3,7 @@
 // current state: mat and panels, HUD, found/hint/wrong markers, the
 // message strip, and the overlay card for the current screen.
 import { BUTTONS, COLORS, HINT_PILL, MAT, PANEL, ROUNDS, TIMER_BAR, VIEW } from './config.js';
-import { SCENES } from './scenes.js';
+import { SCENES, paintTitleBackdrop } from './scenes.js';
 
 function rrPath(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -144,7 +144,7 @@ function drawHud(ctx, game) {
     'bold 18px system-ui, sans-serif', secColor);
   // Score, right side.
   text(ctx, 'SCORE', 1078, 26, '12px system-ui, sans-serif', COLORS.muted, 'right');
-  text(ctx, String(s.score), 1078, 56, 'bold 26px system-ui, sans-serif', COLORS.cream, 'right');
+  text(ctx, String(s.score), 1078, 56, 'bold 26px Georgia, serif', COLORS.cream, 'right');
   // Hint pill.
   const pill = HINT_PILL;
   const canHint = s.screen === 'play' && s.hintsLeft > 0;
@@ -180,8 +180,24 @@ function dimAndCard(ctx, x, y, w, h) {
 function drawOverlay(ctx, game) {
   const s = game.state;
   if (s.screen === 'title') {
-    dimAndCard(ctx, 390, 288, 500, 240);
+    // The card floats over the harbour painting (paintTitleBackdrop
+    // already laid it down with its own gentle dim), so the card gets
+    // only a whisper of extra shade and a soft-edged panel.
+    ctx.fillStyle = 'rgba(6, 10, 20, 0.22)';
+    ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+    rrPath(ctx, 390, 288, 500, 240, 16);
+    ctx.fillStyle = 'rgba(20, 29, 49, 0.94)';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#3a4a6b';
+    ctx.stroke();
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 2;
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '3px';
     text(ctx, 'DOUBLE LIGHT', 640, 340, 'bold 44px Georgia, serif', COLORS.gold, 'center');
+    ctx.restore();
     text(ctx, 'Spot every difference. Beat the clock.', 640, 372,
       '17px system-ui, sans-serif', COLORS.cream, 'center');
     text(ctx, '6 rounds · 3 scenes · hints cost 150', 640, 398,
@@ -225,6 +241,13 @@ function drawOverlay(ctx, game) {
 }
 
 export function drawGame(ctx, game) {
+  // The title screen trades the mat and panels for the first scene's
+  // painting, full-bleed, with the card floating over it.
+  if (game.state.screen === 'title') {
+    paintTitleBackdrop(ctx);
+    drawOverlay(ctx, game);
+    return;
+  }
   ctx.fillStyle = COLORS.page;
   ctx.fillRect(0, 0, VIEW.width, VIEW.height);
   // Cream mat under the two pictures.

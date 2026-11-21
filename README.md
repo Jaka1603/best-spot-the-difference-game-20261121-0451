@@ -6,9 +6,11 @@
 
 Two pictures sit side by side on a cream mat. They look identical — they
 are not. **DOUBLE LIGHT** is a spot-the-difference hunt across three
-hand-painted procedural scenes: a harbour at dusk, a rocky lighthouse cove
+richly painted illustrated scenes: a harbour at dusk, a rocky lighthouse cove
 at night, and a night market on the pier. Find every hidden change before
-the clock runs out.
+the clock runs out. Each picture starts as one painting; the changes are
+worked into it with clone-stamp patches, sprites cut from the painting
+itself, and tint patches clipped to a shape, so the pair never drifts.
 
 ## How it plays
 
